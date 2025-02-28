@@ -5,7 +5,7 @@
 // Single-producer/single-consumer queue can be used for communication with thread which services hardware device (wait-free property is required), or when there are naturally only one producer and one consumer. Also N single-producer/single-consumer queues can be used to construct multi-producer/single-consumer queue, or N^2 queues can be used to construct fully-connected system of N threads (other partially-connected topologies are also possible).
 // Hardware platform: x86-32/64 
 // Compiler: Intel C++ Compiler
-
+#pragma once
 #include <cstddef>
 
 #define __memory_barrier() __asm__ __volatile__ ("mfence" : : : "memory")
@@ -66,6 +66,10 @@ public:
       } else {
           return false;
       }
+  }
+
+  bool empty() {
+      return !load_consume(&tail_->next_);
   }
 
 private:

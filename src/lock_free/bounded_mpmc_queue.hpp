@@ -9,6 +9,7 @@
 // (as in the two-lock queue), i.e. do not touch the same data while queue is not empty.
 // On my dual-core laptop enqueue/dequeue takes 75 cycles on average in a synthetic multi-threaded benchmark.
 // Source code test suite are attached below (the file contains limited implementation of  std::atomic, ready to run on Windows, MSVC, x86-32) .
+#pragma once
 #include <cassert>
 
 template<typename T>
@@ -43,9 +44,10 @@ public:
         if (enqueue_pos_.compare_exchange_weak
             (pos, pos + 1, std::memory_order_relaxed))
           break;
-      } else if (dif < 0) // 未知异常情况?
+      } else if (dif < 0) {// 队列套圈了 dif = - (buffer_mask_)，需要重试.
         return false;
-      else // 已经被用了
+      }
+      else // 已经被用了，队列满时，会死循环.
         pos = enqueue_pos_.load(std::memory_order_relaxed);
     }
 
@@ -70,7 +72,7 @@ public:
         if (dequeue_pos_.compare_exchange_weak
             (pos, pos + 1, std::memory_order_relaxed))
           break;
-      } else if (dif < 0) // 未知异常情况?
+      } else if (dif < 0) // 队列空，dif=-1
         return false;
       else // 数据已经被别人读走了
         pos = dequeue_pos_.load(std::memory_order_relaxed);
@@ -81,6 +83,16 @@ public:
       (pos + buffer_mask_ + 1, std::memory_order_release);
 
     return true;
+  }
+
+  bool empty() {
+    size_t de_pos = dequeue_pos_.load(std::memory_order_relaxed);
+    cell_t* cell = &buffer_[de_pos & buffer_mask_];
+    size_t seq = 
+        cell->sequence_.load(std::memory_order_acquire);
+
+    intptr_t dif = (intptr_t)seq - (intptr_t)(de_pos + 1);
+    return dif < 0;
   }
 
 private:

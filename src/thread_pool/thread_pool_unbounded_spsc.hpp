@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+#include "unbounded_spsc_queue.hpp"
+
 #ifndef likely
 #define likely(x) __builtin_expect(!!(x), 1)
 #endif
@@ -16,11 +18,10 @@
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #endif
 
-
-class ThreadPool2 {
+class ThreadPoolUnboundedSPSC {
 public:
-    ThreadPool2() { }
-    ~ThreadPool2();
+    ThreadPoolUnboundedSPSC() { }
+    ~ThreadPoolUnboundedSPSC();
 
     bool Init(int thread_count);
     void Release();
@@ -30,10 +31,10 @@ public:
 
 private:
     struct alignas(64) Thread {
-        std::deque<std::function<void()>> deque_;
-        std::thread thread_;
+        spsc_queue<std::function<void()>> deque_;
         std::condition_variable cond_;
         std::mutex mutex_;
+        std::thread thread_;
     };
 
     void ThreadRun(int thread_index);
@@ -41,24 +42,25 @@ private:
     std::vector<std::unique_ptr<Thread>> threads_;
     bool stop_{false};
     std::atomic_int64_t seq_{0};
+    const static uint64_t SPIN_MAX{100000};
 };
 
-ThreadPool2::~ThreadPool2() {
+ThreadPoolUnboundedSPSC::~ThreadPoolUnboundedSPSC() {
     Release();
 }
 
-bool ThreadPool2::Init(int thread_count) {
+bool ThreadPoolUnboundedSPSC::Init(int thread_count) {
     stop_ = false;
     threads_.reserve(thread_count);
     for (int i = 0; i < thread_count; ++i) {
         std::unique_ptr<Thread> ptr = std::make_unique<Thread>();
         threads_.emplace_back(std::move(ptr));
-        threads_.back()->thread_ = std::thread(std::bind(&ThreadPool2::ThreadRun, this, i));
+        threads_.back()->thread_ = std::thread(std::bind(&ThreadPoolUnboundedSPSC::ThreadRun, this, i));
     }
     return true;
 }
 
-void ThreadPool2::Release() {
+void ThreadPoolUnboundedSPSC::Release() {
     stop_ = true;
     for (auto& t: threads_) {
         t->cond_.notify_all();
@@ -72,43 +74,42 @@ void ThreadPool2::Release() {
     threads_.clear();
 }
 
-void ThreadPool2::ThreadRun(int thread_index) {
-    Thread& t = *threads_[thread_index];
-    std::function<void()> task;
+void ThreadPoolUnboundedSPSC::ThreadRun(int thread_index) {
+    Thread& t = *(threads_[thread_index]);
+    std::function<void ()> task;
+    uint64_t spin_counter = 0;
     while(likely(!stop_)) {
-        {
-            std::unique_lock<std::mutex> lock(t.mutex_);
-            t.cond_.wait(lock, [&] () {
-                return stop_ || !t.deque_.empty();
-            });
-
-            if (unlikely(stop_)) {
-                break;
-            }
-
-            task = std::move(t.deque_.front());
-            t.deque_.pop_front();
-        }
-
-        if (likely(task)) {
-            task();
-        }
         task = nullptr;
+        t.deque_.dequeue(task);
+        if (likely(task)) {
+            (task)();
+            spin_counter = 0;
+            continue;
+        }
+
+        ++ spin_counter;
+        if (likely(spin_counter < SPIN_MAX)) {
+            std::this_thread::yield();
+            continue;
+        }
+        spin_counter = 0;
+        
+        std::unique_lock<std::mutex> lock(t.mutex_);
+        t.cond_.wait(lock, [&] () {
+            return stop_ || !t.deque_.empty();
+        });
     }
 }
 
-bool ThreadPool2::PushTask(std::function<void()>&& task) {
+bool ThreadPoolUnboundedSPSC::PushTask(std::function<void()>&& task) {
     int64_t index = seq_.fetch_add(1);
     Thread& t = *threads_[index%threads_.size()];
-    {
-        std::lock_guard<std::mutex> lg(t.mutex_);
-        t.deque_.emplace_back(std::move(task));
-    }
+    t.deque_.enqueue(std::move(task));
     t.cond_.notify_one();
     return true;
 }
 
-bool ThreadPool2::Empty() {
+bool ThreadPoolUnboundedSPSC::Empty() {
     bool has_data = false;
     for (auto& t: threads_) {
         std::lock_guard<std::mutex> lg(t->mutex_);
