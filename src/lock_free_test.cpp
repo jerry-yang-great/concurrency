@@ -16,6 +16,7 @@
 #include "unbounded_mpsc_queue.hpp"
 
 const int DATACOUNT = 10000 * 1000;
+const int BUFFSIZE = 131072*128;
 
 template<class T>
 class BaseQueue {
@@ -79,6 +80,9 @@ void function_spsc_test(T &q) {
                 tmp->data = increase_func;
                 q.Push(&unbounded_mpsc_queue_nodes[i]);
             }
+            if constexpr (std::is_same<MPSCQueue<std::function<void()>, true>, T>::value) {
+                q.Push(increase_func);
+            }
         }
         start.store(false, std::memory_order_release);
     };
@@ -132,7 +136,12 @@ void function_spsc_test(T &q) {
                     continue;
                 }
             }
-            
+            else if constexpr (std::is_same<MPSCQueue<std::function<void()>, true>, T>::value) {
+                if (q.Pop(task)) {
+                    task();
+                    continue;
+                }
+            }
         }
         end_time = std::chrono::system_clock::now();
     };
@@ -190,6 +199,9 @@ void int64_spsc_test(T &q) {
                 tmp->data = i;
                 q.Push(tmp);
             }
+            if constexpr (std::is_same<MPSCQueue<int64_t, true>, T>::value) {
+                q.Push(i);
+            }
         }
         start.store(false, std::memory_order_release);
     };
@@ -245,7 +257,12 @@ void int64_spsc_test(T &q) {
                     continue;
                 }
             }
-            
+            else if constexpr (std::is_same<MPSCQueue<int64_t, true>, T>::value) {
+                if (q.Pop(task)) {
+                    has_task = true;
+                    continue;
+                }
+            }
         }
         end_time = std::chrono::system_clock::now();
     };
@@ -275,12 +292,12 @@ int main() {
     function_spsc_test<BaseQueue<std::function<void()>>>(base_q);
     std::cout << std::endl;
     
-    rigtorp::SPSCQueue<std::function<void()>> bounded_spsc_q(131072*128);
+    rigtorp::SPSCQueue<std::function<void()>> bounded_spsc_q(BUFFSIZE);
     std::cout << "TEST_BOUNDED_SPSC_QUEUE" << std::endl;
     function_spsc_test<rigtorp::SPSCQueue<std::function<void()>>>(bounded_spsc_q);
     std::cout << std::endl;
 
-    mpmc_bounded_queue<std::function<void()>> bounded_mpmc_q(131072*128);
+    mpmc_bounded_queue<std::function<void()>> bounded_mpmc_q(BUFFSIZE);
     std::cout << "TEST_MPMC_BOUNDED_QUEUE" << std::endl;
     function_spsc_test<mpmc_bounded_queue<std::function<void()>>>(bounded_mpmc_q);
     std::cout << std::endl;
@@ -290,10 +307,16 @@ int main() {
     function_spsc_test<spsc_queue<std::function<void()>>>(unbounded_spsc_q);
     std::cout << std::endl;
 
-    MPSCQueue<std::function<void()>, false> unbounded_mpsc_q;
-    std::cout << "TEST_UNBOUNDED_MPSC_QUEUE" << std::endl;
-    function_spsc_test<MPSCQueue<std::function<void()>, false>>(unbounded_mpsc_q);
+    MPSCQueue<std::function<void()>, false> unbounded_mpsc_q_buf;
+    std::cout << "TEST_UNBOUNDED_MPSC_QUEUE BUFFER" << std::endl;
+    function_spsc_test<MPSCQueue<std::function<void()>, false>>(unbounded_mpsc_q_buf);
     std::cout << std::endl;
+
+    MPSCQueue<std::function<void()>, true> unbounded_mpsc_q;
+    std::cout << "TEST_UNBOUNDED_MPSC_QUEUE" << std::endl;
+    function_spsc_test<MPSCQueue<std::function<void()>, true>>(unbounded_mpsc_q);
+    std::cout << std::endl;
+
 
     // int64_t test
     std::cout << "----int64_t test----" << std::endl;
@@ -302,13 +325,13 @@ int main() {
     int64_spsc_test<BaseQueue<int64_t>>(base_q_int64);
     std::cout << std::endl;
 
-    rigtorp::SPSCQueue<int64_t> bounded_spsc_q_int64(131072*128);
+    rigtorp::SPSCQueue<int64_t> bounded_spsc_q_int64(BUFFSIZE);
     std::cout << "TEST_BOUNDED_SPSC_QUEUE" << std::endl;
     int64_spsc_test<rigtorp::SPSCQueue<int64_t>>(bounded_spsc_q_int64);
     std::cout << std::endl;
 
 
-    mpmc_bounded_queue<int64_t> bounded_mpmc_q_int64(131072*128);
+    mpmc_bounded_queue<int64_t> bounded_mpmc_q_int64(BUFFSIZE);
     std::cout << "TEST_MPMC_BOUNDED_QUEUE" << std::endl;
     int64_spsc_test<mpmc_bounded_queue<int64_t>>(bounded_mpmc_q_int64);
     std::cout << std::endl;
@@ -318,8 +341,13 @@ int main() {
     int64_spsc_test<spsc_queue<int64_t>>(unbounded_spsc_q_int64);
     std::cout << std::endl;
 
-    MPSCQueue<int64_t, false> unbounded_mpsc_q_int64;
+    MPSCQueue<int64_t, false> unbounded_mpsc_q_int64_buf;
+    std::cout << "TEST_UNBOUNDED_MPSC_QUEUE BUFFER" << std::endl;
+    int64_spsc_test<MPSCQueue<int64_t, false>>(unbounded_mpsc_q_int64_buf);
+    std::cout << std::endl;
+
+    MPSCQueue<int64_t, true> unbounded_mpsc_q_int64;
     std::cout << "TEST_UNBOUNDED_MPSC_QUEUE" << std::endl;
-    int64_spsc_test<MPSCQueue<int64_t, false>>(unbounded_mpsc_q_int64);
+    int64_spsc_test<MPSCQueue<int64_t, true>>(unbounded_mpsc_q_int64);
     std::cout << std::endl;
 }

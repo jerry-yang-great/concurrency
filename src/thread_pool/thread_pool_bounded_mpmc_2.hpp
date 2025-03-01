@@ -8,12 +8,13 @@
 #include <thread>
 #include <vector>
 
+#include "bounded_mpmc_queue.hpp"
 #include "thread_pool_utility.hpp"
 
-class ThreadPool2 {
+class ThreadPoolBoundedMPMC2 {
 public:
-    ThreadPool2() { }
-    ~ThreadPool2();
+    ThreadPoolBoundedMPMC2(size_t buffer_size):buffer_size_(buffer_size) { }
+    ~ThreadPoolBoundedMPMC2();
 
     bool Init(int thread_count, std::vector<int>& cpu_cores);
     bool Init(int thread_count);
@@ -24,45 +25,51 @@ public:
 
 private:
     struct alignas(64) Thread {
-        std::deque<std::function<void()>> deque_;
-        std::thread thread_;
+        mpmc_bounded_queue<std::function<void()>> deque_;
         std::condition_variable cond_;
         std::mutex mutex_;
+        std::thread thread_;
+        Thread(size_t buffer_size): deque_(buffer_size) {
+        }
     };
 
     void ThreadRun(int thread_index);
 
+
     std::vector<std::unique_ptr<Thread>> threads_;
     bool stop_{false};
     std::atomic_int64_t seq_{0};
+    size_t buffer_size_;
+    const static uint64_t SPIN_MAX{100000};
 };
 
-ThreadPool2::~ThreadPool2() {
+ThreadPoolBoundedMPMC2::~ThreadPoolBoundedMPMC2() {
     Release();
 }
 
-bool ThreadPool2::Init(int thread_count) {
+bool ThreadPoolBoundedMPMC2::Init(int thread_count) {
     std::vector<int> cpu_cores;
     return Init(thread_count, cpu_cores);
 }
 
-bool ThreadPool2::Init(int thread_count, std::vector<int>& cpu_cores) {
+bool ThreadPoolBoundedMPMC2::Init(int thread_count, std::vector<int>& cpu_cores) {
     stop_ = false;
     threads_.reserve(thread_count);
     for (int i = 0; i < thread_count; ++i) {
-        std::unique_ptr<Thread> ptr = std::make_unique<Thread>();
+        std::unique_ptr<Thread> ptr = std::make_unique<Thread>(buffer_size_);
         threads_.emplace_back(std::move(ptr));
         Thread* thread_ptr = threads_.back().get();
-        thread_ptr->thread_ = std::thread(std::bind(&ThreadPool2::ThreadRun, this, i));
+        thread_ptr->thread_ = std::thread(std::bind(&ThreadPoolBoundedMPMC2::ThreadRun, this, i));
 
         if (i < cpu_cores.size()) {
             ThreadPoolUtility::SetThreadAffinity(thread_ptr->thread_, cpu_cores[i]);
         }
     }
+
     return true;
 }
 
-void ThreadPool2::Release() {
+void ThreadPoolBoundedMPMC2::Release() {
     stop_ = true;
     for (auto& t: threads_) {
         t->cond_.notify_all();
@@ -76,43 +83,41 @@ void ThreadPool2::Release() {
     threads_.clear();
 }
 
-void ThreadPool2::ThreadRun(int thread_index) {
-    Thread& t = *threads_[thread_index];
-    std::function<void()> task;
+void ThreadPoolBoundedMPMC2::ThreadRun(int thread_index) {
+    Thread& t = *(threads_[thread_index]);
+    std::function<void ()> task;
+    uint64_t spin_counter = 0;
     while(likely(!stop_)) {
-        {
-            std::unique_lock<std::mutex> lock(t.mutex_);
-            t.cond_.wait(lock, [&] () {
-                return stop_ || !t.deque_.empty();
-            });
-
-            if (unlikely(stop_)) {
-                break;
-            }
-
-            task = std::move(t.deque_.front());
-            t.deque_.pop_front();
-        }
-
-        if (likely(task)) {
-            task();
-        }
         task = nullptr;
+        if (likely(t.deque_.dequeue(task))) {
+            task();
+            spin_counter = 0;
+            continue;
+        }
+
+        ++ spin_counter;
+        if (likely(spin_counter < SPIN_MAX)) {
+            std::this_thread::yield();
+            continue;
+        }
+        spin_counter = 0;
+        
+        std::unique_lock<std::mutex> lock(t.mutex_);
+        t.cond_.wait(lock, [&] () {
+            return stop_ || !t.deque_.empty();
+        });
     }
 }
 
-bool ThreadPool2::PushTask(std::function<void()>&& task) {
+bool ThreadPoolBoundedMPMC2::PushTask(std::function<void()>&& task) {
     int64_t index = seq_.fetch_add(1);
     Thread& t = *threads_[index%threads_.size()];
-    {
-        std::lock_guard<std::mutex> lg(t.mutex_);
-        t.deque_.emplace_back(std::move(task));
-    }
+    while(!t.deque_.enqueue(std::move(task)));
     t.cond_.notify_one();
     return true;
 }
 
-bool ThreadPool2::Empty() {
+bool ThreadPoolBoundedMPMC2::Empty() {
     bool has_data = false;
     for (auto& t: threads_) {
         std::lock_guard<std::mutex> lg(t->mutex_);

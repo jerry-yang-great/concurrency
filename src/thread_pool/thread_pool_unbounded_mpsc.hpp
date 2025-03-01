@@ -9,21 +9,14 @@
 #include <vector>
 
 #include "unbounded_mpsc_queue.hpp"
-
-#ifndef likely
-#define likely(x) __builtin_expect(!!(x), 1)
-#endif
-
-#ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#endif
-
+#include "thread_pool_utility.hpp"
 
 class ThreadPoolUnboundedMPSC {
 public:
     ThreadPoolUnboundedMPSC() { }
     ~ThreadPoolUnboundedMPSC();
 
+    bool Init(int thread_count, std::vector<int>& cpu_cores);
     bool Init(int thread_count);
     void Release();
 
@@ -40,6 +33,18 @@ private:
 
     void ThreadRun(int thread_index);
 
+    void SetThreadAffinity(std::thread& thread, int cpu_core) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);          // 清空 CPU 集合
+        CPU_SET(cpu_core, &cpuset);  // 将指定的 CPU 核心添加到集合中
+
+        // 获取 std::thread 的本地句柄
+        pthread_t nativeHandle = thread.native_handle();
+
+        // 设置线程的 CPU 亲和性
+        int result = pthread_setaffinity_np(nativeHandle, sizeof(cpu_set_t), &cpuset);
+    }
+
     std::vector<std::unique_ptr<Thread>> threads_;
     bool stop_{false};
     std::atomic_int64_t seq_{0};
@@ -51,12 +56,22 @@ ThreadPoolUnboundedMPSC::~ThreadPoolUnboundedMPSC() {
 }
 
 bool ThreadPoolUnboundedMPSC::Init(int thread_count) {
+    std::vector<int> cpu_cores;
+    return Init(thread_count, cpu_cores);
+}
+
+bool ThreadPoolUnboundedMPSC::Init(int thread_count, std::vector<int>& cpu_cores) {
     stop_ = false;
     threads_.reserve(thread_count);
     for (int i = 0; i < thread_count; ++i) {
         std::unique_ptr<Thread> ptr = std::make_unique<Thread>();
         threads_.emplace_back(std::move(ptr));
-        threads_.back()->thread_ = std::thread(std::bind(&ThreadPoolUnboundedMPSC::ThreadRun, this, i));
+        Thread* thread_ptr = threads_.back().get();
+        thread_ptr->thread_ = std::thread(std::bind(&ThreadPoolUnboundedMPSC::ThreadRun, this, i));
+
+        if (i < cpu_cores.size()) {
+            ThreadPoolUtility::SetThreadAffinity(thread_ptr->thread_, cpu_cores[i]);
+        }
     }
     return true;
 }

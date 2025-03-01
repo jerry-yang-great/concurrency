@@ -9,20 +9,14 @@
 #include <vector>
 
 #include "bounded_mpmc_queue.hpp"
-
-#ifndef likely
-#define likely(x) __builtin_expect(!!(x), 1)
-#endif
-
-#ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#endif
+#include "thread_pool_utility.hpp"
 
 class ThreadPoolBoundedMPMC {
 public:
     ThreadPoolBoundedMPMC(size_t buffer_size):deque_(buffer_size) { }
     ~ThreadPoolBoundedMPMC();
 
+    bool Init(int thread_count, std::vector<int>& cpu_cores);
     bool Init(int thread_count);
     void Release();
 
@@ -45,10 +39,19 @@ ThreadPoolBoundedMPMC::~ThreadPoolBoundedMPMC() {
 }
 
 bool ThreadPoolBoundedMPMC::Init(int thread_count) {
+    std::vector<int> cpu_cores;
+    return Init(thread_count, cpu_cores);
+}
+
+bool ThreadPoolBoundedMPMC::Init(int thread_count, std::vector<int>& cpu_cores) {
     stop_ = false;
     threads_.reserve(thread_count);
     for (int i = 0; i < thread_count; ++i) {
         threads_.emplace_back(std::bind(&ThreadPoolBoundedMPMC::ThreadRun, this, i));
+
+        if (i < cpu_cores.size()) {
+            ThreadPoolUtility::SetThreadAffinity(threads_.back(), cpu_cores[i]);
+        }
     }
     return true;
 }

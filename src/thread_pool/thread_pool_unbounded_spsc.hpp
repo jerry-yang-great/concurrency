@@ -9,20 +9,14 @@
 #include <vector>
 
 #include "unbounded_spsc_queue.hpp"
-
-#ifndef likely
-#define likely(x) __builtin_expect(!!(x), 1)
-#endif
-
-#ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#endif
+#include "thread_pool_utility.hpp"
 
 class ThreadPoolUnboundedSPSC {
 public:
     ThreadPoolUnboundedSPSC() { }
     ~ThreadPoolUnboundedSPSC();
 
+    bool Init(int thread_count, std::vector<int>& cpu_cores);
     bool Init(int thread_count);
     void Release();
 
@@ -50,12 +44,22 @@ ThreadPoolUnboundedSPSC::~ThreadPoolUnboundedSPSC() {
 }
 
 bool ThreadPoolUnboundedSPSC::Init(int thread_count) {
+    std::vector<int> cpu_cores;
+    return Init(thread_count, cpu_cores);
+}
+
+bool ThreadPoolUnboundedSPSC::Init(int thread_count, std::vector<int>& cpu_cores) {
     stop_ = false;
     threads_.reserve(thread_count);
     for (int i = 0; i < thread_count; ++i) {
         std::unique_ptr<Thread> ptr = std::make_unique<Thread>();
         threads_.emplace_back(std::move(ptr));
-        threads_.back()->thread_ = std::thread(std::bind(&ThreadPoolUnboundedSPSC::ThreadRun, this, i));
+        Thread* thread_ptr = threads_.back().get();
+        thread_ptr->thread_ = std::thread(std::bind(&ThreadPoolUnboundedSPSC::ThreadRun, this, i));
+
+        if (i < cpu_cores.size()) {
+            ThreadPoolUtility::SetThreadAffinity(thread_ptr->thread_, cpu_cores[i]);
+        }
     }
     return true;
 }

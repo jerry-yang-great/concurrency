@@ -7,19 +7,14 @@
 #include <thread>
 #include <vector>
 
-#ifndef likely
-#define likely(x) __builtin_expect(!!(x), 1)
-#endif
-
-#ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#endif
+#include "thread_pool_utility.hpp"
 
 class ThreadPool {
 public:
     ThreadPool() { }
     ~ThreadPool();
 
+    bool Init(int thread_count, std::vector<int>& cpu_cores);
     bool Init(int thread_count);
     void Release();
 
@@ -41,10 +36,19 @@ ThreadPool::~ThreadPool() {
 }
 
 bool ThreadPool::Init(int thread_count) {
+    std::vector<int> cpu_cores;
+    return Init(thread_count, cpu_cores);
+}
+
+bool ThreadPool::Init(int thread_count, std::vector<int>& cpu_cores) {
     stop_ = false;
     threads_.reserve(thread_count);
     for (int i = 0; i < thread_count; ++i) {
         threads_.emplace_back(std::bind(&ThreadPool::ThreadRun, this, i));
+
+        if (i < cpu_cores.size()) {
+            ThreadPoolUtility::SetThreadAffinity(threads_.back(), cpu_cores[i]);
+        }
     }
     return true;
 }

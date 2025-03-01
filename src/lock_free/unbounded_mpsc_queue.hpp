@@ -16,7 +16,7 @@
 #include <atomic>
 
 // E 是否由队列内部管理节点内存.
-template <typename T, bool E>
+template <typename T, bool E = true>
 class MPSCQueue { // mpscq_t
 public:
     // template <typename T>
@@ -113,34 +113,3 @@ private:
     Node stub;
 
 };
-
-// Node* mpscq_pop(mpscq_t* self) {
-//     Node* tail = self->tail;
-//     Node* next = tail->next;
-//     if (tail == &self->stub) {
-//         if (0 == next)
-//             return 0;
-//         self->tail = next;
-//         tail = next;
-//         next = next->next;
-//     }
-
-//     if (next) {
-//         self->tail = next;
-//         return tail;
-//     }
-
-//     Node* head = self->head;
-//     if (tail != head)
-//         return 0;
-
-//     mpscq_push(self, &self->stub);
-//     next = tail->next;
-//     if (next)
-//     {
-//         self->tail = next;
-//         return tail;
-//     }
-//     return 0;
-
-// }
